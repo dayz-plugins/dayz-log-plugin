@@ -1,0 +1,37 @@
+[workspace]
+resolver = "2"
+members = ["crates/dayz-log-plugin"]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "Unlicense"
+repository = "https://github.com/dayz-plugins/dayz-log-plugin"
+
+[workspace.dependencies]
+# The loader is a sibling checkout, not a published crate: this repository is built against
+# the loader it will run in, and `scripts/build.sh` says so when the path is missing.
+dayz-plugin-sdk = { path = "../dayz-plugin-loader/crates/dayz-plugin-sdk" }
+log = "0.4"
+
+[workspace.lints.rust]
+# "deny" rather than "forbid": the plugin crate has no unsafe, but the SDK macro expands into
+# the plugin, and a future module may need a scoped allow with a reason.
+unsafe_code = "deny"
+missing_docs = "warn"
+
+[workspace.lints.clippy]
+pedantic = { level = "warn", priority = -1 }
+too_many_lines = "warn"
+unwrap_used = "warn"
+expect_used = "warn"
+undocumented_unsafe_blocks = "warn"
+
+[profile.release]
+opt-level = 2
+debug = 1
+lto = "thin"
+codegen-units = 1
+# Never "abort": a plugin panic must unwind so the loader can catch it at the boundary.
+panic = "unwind"

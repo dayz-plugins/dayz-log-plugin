@@ -1,0 +1,20 @@
+[package]
+name = "dayz-log-plugin"
+description = "Loader plugin that reports the game's own events, chat and remote calls."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+repository.workspace = true
+publish = false
+
+[lib]
+name = "gamelog"
+crate-type = ["cdylib"]
+
+[dependencies]
+dayz-plugin-sdk.workspace = true
+log.workspace = true
+
+[lints]
+workspace = true
