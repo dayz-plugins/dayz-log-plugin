@@ -1,6 +1,6 @@
 [package]
 name = "dayz-log-plugin"
-description = "Loader plugin that reports the game's own events, chat and remote calls."
+description = "uniloader plugin that reports DayZ's own events, chat and remote calls."
 version.workspace = true
 edition.workspace = true
 rust-version.workspace = true
@@ -13,7 +13,9 @@ name = "gamelog"
 crate-type = ["cdylib"]
 
 [dependencies]
-dayz-plugin-sdk.workspace = true
+uniloader-sdk.workspace = true
+uniloader-overlay.workspace = true
+dayz-game.workspace = true
 log.workspace = true
 
 [lints]

@@ -33,12 +33,12 @@ pub struct LogFile {
 impl LogFile {
     /// Open, or append to, the event log beside the loader's own.
     ///
-    /// `config_dir` is what the loader hands a plugin — `<game>/plugin-loader/config` — and
-    /// the log directory is its sibling. Derived rather than asked for because the host API
-    /// offers the config directory and not the log one, and inventing a path somewhere else
-    /// would put this file where nobody looks for it.
-    pub fn open(config_dir: &str) -> LogFile {
-        let logs = Path::new(config_dir)
+    /// `config_dir` is what the loader hands a plugin — `<game>/uniloader/config` — and the
+    /// log directory is its sibling. Derived rather than asked for because the host API offers
+    /// the config directory and not the log one, and inventing a path somewhere else would put
+    /// this file where nobody looks for it.
+    pub fn open(config_dir: &Path) -> LogFile {
+        let logs = config_dir
             .parent()
             .map_or_else(|| PathBuf::from("logs"), |root| root.join("logs"));
         let path = logs.join(FILE_NAME);
@@ -97,7 +97,7 @@ impl LogFile {
             return;
         }
         *count += 1;
-        if *count % FLUSH_EVERY == 0 {
+        if count.is_multiple_of(FLUSH_EVERY) {
             let _ = file.flush();
         }
     }
@@ -144,15 +144,15 @@ mod tests {
     #[test]
     fn the_log_lands_beside_the_loader_log_rather_than_in_the_config_directory() {
         let dir = std::env::temp_dir().join("dayz-log-plugin-test-paths");
-        let config = dir.join("plugin-loader").join("config");
-        let file = LogFile::open(&config.to_string_lossy());
+        let config = dir.join("uniloader").join("config");
+        let file = LogFile::open(&config);
         assert_eq!(
             file.path().file_name().and_then(|n| n.to_str()),
             Some(FILE_NAME)
         );
         assert_eq!(
             file.path().parent(),
-            Some(dir.join("plugin-loader").join("logs").as_path())
+            Some(dir.join("uniloader").join("logs").as_path())
         );
         let _ = std::fs::remove_dir_all(&dir);
     }
@@ -161,8 +161,8 @@ mod tests {
     fn lines_are_counted_and_an_unopenable_file_is_simply_not_written() {
         let dir = std::env::temp_dir().join("dayz-log-plugin-test-write");
         let _ = std::fs::remove_dir_all(&dir);
-        let config = dir.join("plugin-loader").join("config");
-        let file = LogFile::open(&config.to_string_lossy());
+        let config = dir.join("uniloader").join("config");
+        let file = LogFile::open(&config);
         file.write_line("one");
         file.write_line("two");
         file.flush();
@@ -174,9 +174,9 @@ mod tests {
         // than an error per line.
         let dir2 = std::env::temp_dir().join("dayz-log-plugin-test-blocked");
         let _ = std::fs::remove_dir_all(&dir2);
-        let logs = dir2.join("plugin-loader").join("logs");
+        let logs = dir2.join("uniloader").join("logs");
         let _ = std::fs::create_dir_all(logs.join(FILE_NAME));
-        let blocked = LogFile::open(&dir2.join("plugin-loader").join("config").to_string_lossy());
+        let blocked = LogFile::open(&dir2.join("uniloader").join("config"));
         blocked.write_line("nowhere");
         assert_eq!(blocked.written(), 0);
 

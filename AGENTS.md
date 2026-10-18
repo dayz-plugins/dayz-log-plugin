@@ -5,7 +5,7 @@ this file only covers what is specific to this repository.
 
 ## The rule that shapes everything here
 
-**This plugin reports; it does not interpret.** It knows three things the loader hands it — an
+**This plugin reports; it does not interpret.** It knows three things the adapter hands it — an
 event's name, a chat line's four fields, a remote call's four values — and it decides where
 each one goes. It must not grow a table of event names mapped to meanings, a struct mirroring
 `MPConnectionCloseEvent`'s fields, or a guess at what an RPC number stands for.
@@ -14,24 +14,28 @@ The reason is that none of those are this repository's to know. An event's layou
 about the game binary, and a fact about the game binary belongs in
 [dayz-data](https://github.com/dayz-plugins/dayz-data) with the reasoning in
 [dayz-plugins.github.io](https://github.com/dayz-plugins/dayz-plugins.github.io) — where the
-loader can resolve it per build, and where it stays right when a game update moves it. A copy
+adapter can resolve it per build, and where it stays right when a game update moves it. A copy
 in here would be a second source of truth that nothing checks.
 
-So when an event's contents do become readable, the decoding goes in the **loader**, reaches
+So when an event's contents do become readable, the decoding goes in the **adapter**
+([dayz-adapter](https://github.com/dayz-plugins/dayz-adapter)), reaches
 this plugin as more fields on `Event`, and this plugin's change is one more `format!`
 argument. If a change here needs an offset, it is in the wrong repository.
 
 ## Layout
 
 - `crates/dayz-log-plugin` — `cdylib` named `gamelog`, built for `x86_64-pc-windows-msvc`.
-  - `lib.rs` — the `Plugin` impl, the settings, the three callbacks. The only file that knows
-    what a line looks like.
+  - `lib.rs` — the `Plugin` impl, the settings, and the adapter's three callbacks
+    (`GameListener` on the shared `Inner`). The only file that knows what a line looks like.
+  - `panel.rs` — the overlay's **Events** panel; only registered when the overlay runs.
   - `filter.rs` — the pattern matcher. No loader, no game: it tests on any host, and it is the
     piece most likely to be wrong in a way nobody notices, so it carries the most tests.
   - `sink.rs` — the log file. Also host-testable.
 
-The SDK comes from a sibling `dayz-plugin-loader` checkout as a path dependency, not from a
-registry. `scripts/build.sh` checks for it and says so; `DAYZ_LOADER_DIR` moves it.
+The SDK and the overlay client come from a sibling
+[uniloader](https://github.com/uniloaders/uniloader) checkout (`../../uniloader`) and the game
+streams from a sibling [dayz-adapter](https://github.com/dayz-plugins/dayz-adapter), all as path
+dependencies, not from a registry.
 
 ## The defaults are the feature
 
@@ -56,7 +60,7 @@ leave running. A chat filter is a different plugin.
 
 ## The gate
 
-`scripts/build.sh` is the only accepted way to call something finished: format, clippy on the
+`scripts/gate.sh` is the only accepted way to call something finished: format, clippy on the
 host, tests, docs, clippy for the Windows target, then the release DLL. It filters nothing and
-stops on the first failure. `--fast` skips the host gate when iterating; the full gate has to
-pass before anything is committed.
+stops on the first failure. `--host` runs the host half alone when iterating; the full gate has
+to pass before anything is committed. `--deploy` installs into the game.

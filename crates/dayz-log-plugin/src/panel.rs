@@ -19,16 +19,16 @@
 //! state is a panel that loses it the first time the game closes unexpectedly — which, for a
 //! plugin whose job is to tell you what the game just did, is exactly when it matters.
 
-use dayz_plugin_sdk::{Host, Ui};
+use uniloader_overlay::Ui;
 
 use crate::sinks::{Rules, Sinks};
-use crate::GameLog;
+use crate::Inner;
 
 /// Points reserved for the name column, so the checkboxes line up down the table.
 const NAME_WIDTH: f32 = 300.0;
 
-/// Draw the table. This is the body of `on_ui` for the `events` panel.
-pub(crate) fn draw(plugin: &GameLog, host: &Host, ui: &Ui) {
+/// Draw the table. This is the body of the overlay's `events` panel.
+pub(crate) fn draw(plugin: &Inner, ui: &mut Ui<'_>) {
     ui.label(&format!(
         "{} event classes, {} with decoded fields",
         plugin.catalogue.len(),
@@ -38,13 +38,12 @@ pub(crate) fn draw(plugin: &GameLog, host: &Host, ui: &Ui) {
             .filter(|class| class.field_count > 0)
             .count()
     ));
-    // The loader draws, validates and persists it; a failure here means the setting is not
-    // registered, which is a bug in `start` rather than something to report per frame.
-    let _ = ui.setting("search");
+    // The overlay draws it and the loader validates and persists it.
+    ui.setting("search");
     ui.separator();
     columns(ui);
 
-    let search = host.get("search").unwrap_or_default().to_lowercase();
+    let search = plugin.host.get("search").unwrap_or_default().to_lowercase();
     let mut changed = Vec::new();
     {
         let rules = plugin.rules();
@@ -68,11 +67,11 @@ pub(crate) fn draw(plugin: &GameLog, host: &Host, ui: &Ui) {
         }
     }
     if !changed.is_empty() {
-        plugin.reassign(host, &changed);
+        plugin.reassign(&changed);
     }
 
     ui.separator();
-    footer(plugin, host, ui);
+    footer(plugin, ui);
 }
 
 /// A legend for the columns, rather than a header row.
@@ -81,19 +80,19 @@ pub(crate) fn draw(plugin: &GameLog, host: &Host, ui: &Ui) {
 /// checkbox are not the same width, and the font is proportional — so this does not pretend
 /// to. It names the columns in order and leaves the reader to count, which is honest about
 /// five boxes in a way that a misaligned header would not be.
-fn columns(ui: &Ui) {
+fn columns(ui: &mut Ui<'_>) {
     let names: Vec<&str> = Sinks::ALL.iter().map(|(_, _, name)| *name).collect();
     ui.label(&format!("boxes, left to right: {}", names.join("  ·  ")));
 }
 
 /// The count and the reset button under the table.
-fn footer(plugin: &GameLog, host: &Host, ui: &Ui) {
+fn footer(plugin: &Inner, ui: &mut Ui<'_>) {
     let explicit = plugin.rules().explicit_count();
     ui.label(&format!(
         "{explicit} of them set here; the rest follow the `events` and `toasts` patterns"
     ));
     if ui.button("Back to the patterns for every event") {
-        plugin.clear_overrides(host);
+        plugin.clear_overrides();
     }
 }
 

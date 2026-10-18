@@ -1,8 +1,10 @@
 //! Reports what the game does: every event it raises, every chat line, every remote call.
 //!
-//! The loader hooks the engine's event broadcaster, its chat path and its RPC dispatcher;
-//! this plugin subscribes to all three and sends what arrives wherever it has been told to —
-//! a log file, the loader console, a toast, a dialog, or this client's own chat.
+//! The `dayz` adapter hooks the engine's event broadcaster, its chat path and its RPC
+//! dispatcher; this plugin subscribes to all three and sends what arrives wherever it has been
+//! told to — a log file, the loader console, a toast, a dialog, or this client's own chat.
+//! Toasts, dialogs and the Events panel need the overlay plugin; without it those
+//! destinations stay silent and everything else works.
 //!
 //! ```text
 //! 1759600412.118  event  MPSessionStartEvent
@@ -28,7 +30,7 @@
 //! ## Where a line goes
 //!
 //! Five destinations, set per event in the **Events** panel or in the `sinks` setting; see
-//! [`sinks`] for the table and why the pattern lists still sit underneath it. The `to_file`,
+//! the `sinks` module for the table and why the pattern lists still sit underneath it. The `to_file`,
 //! `to_console` and `to_log` settings are the master switches over the top, and they are what
 //! chat lines and remote calls follow, since those have no event class to look up.
 
@@ -39,13 +41,11 @@ mod sinks;
 
 use std::collections::BTreeSet;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, RwLock};
 
-use dayz_plugin_sdk::api::{StopReason, UiLevel};
-use dayz_plugin_sdk::{
-    export_plugin, Chat, ChatVerdict, Class, Dialog, Event, Host, Notice, Plugin, PluginError, Rpc,
-    Setting, Streams, Ui,
-};
+use dayz_game::{Chat, ChatVerdict, Class, Dayz, Event, GameListener, Rpc, Streams};
+use uniloader_overlay::{Overlay, UiDialog, UiLevel};
+use uniloader_sdk::{export_plugin, Dependency, Host, Plugin, PluginError, Setting, StopReason};
 
 use filter::Filter;
 use sink::LogFile;
@@ -112,7 +112,18 @@ struct Counts {
     rpc: AtomicU64,
 }
 
+/// The plugin. Everything lives in [`Inner`], shared with the adapter's listener and the
+/// overlay's panel, which both call back without a `&self`.
 struct GameLog {
+    inner: Arc<Inner>,
+}
+
+/// What the plugin knows and keeps.
+pub(crate) struct Inner {
+    host: Host,
+    dayz: Dayz,
+    /// `None` without the overlay plugin: no toasts, dialogs or panel then.
+    overlay: Option<Overlay>,
     file: LogFile,
     /// Where each event's line goes. A read lock per event; written only from the panel.
     rules: RwLock<Rules>,
@@ -130,27 +141,36 @@ struct GameLog {
 
 impl Plugin for GameLog {
     const NAME: &'static str = "gamelog";
+    const TITLE: &'static str = "Game log";
     const VERSION: &'static str = env!("CARGO_PKG_VERSION");
+    const AUTHORS: &'static str = "Bluscream";
     const DESCRIPTION: &'static str =
         "Reports the game's own events, chat and remote calls to the console, a log file and toasts.";
+    const DEPENDENCIES: &'static [Dependency] = &[
+        Dependency::plugin(dayz_game::PLUGIN, ">=0.1"),
+        Dependency::plugin(uniloader_overlay::PLUGIN, ">=0.1").optional(),
+    ];
 
     fn start(host: Host) -> Result<Self, PluginError> {
+        let dayz = Dayz::connect(&host)
+            .ok_or_else(|| PluginError::from("the dayz adapter is not running".to_owned()))?;
         register_settings(&host)?;
         host.command("where", "Print where the event log is written.", "")?;
         host.command("stats", "Print how much has been seen and written.", "")?;
         host.command("flush", "Write the event log out now.", "")?;
-        host.command("events", "List every event class the loader knows.", "")?;
-        host.panel("events", "Events", false, "")?;
-        // Everything, filtered here rather than there: the loader's mask is per stream and
-        // the interesting filtering is per event name, which only this plugin knows about.
-        host.listen_game(Streams::ALL)?;
-        let catalogue = host.game_catalogue().unwrap_or_default();
-        log::info!(
-            "watching the game's events, chat and remote calls; {} classes known",
-            catalogue.len()
-        );
+        // Not `events`: that is the name of a setting, and `gamelog.events` on the console
+        // resolves to the setting rather than the command. Found the obvious way.
+        host.command(
+            "classes",
+            "List every event class, and where each one's line goes.",
+            "",
+        )?;
+        let catalogue = dayz.catalogue().unwrap_or_default();
         let known = catalogue.iter().map(|class| class.name).collect();
-        let plugin = GameLog {
+        let inner = Arc::new(Inner {
+            host,
+            dayz,
+            overlay: Overlay::connect(&host),
             file: LogFile::open(&host.config_dir()),
             rules: RwLock::new(Rules::default()),
             switches: Switches::default(),
@@ -158,12 +178,41 @@ impl Plugin for GameLog {
             catalogue,
             known,
             extra: RwLock::new(BTreeSet::new()),
-        };
-        plugin.reload(&host);
-        Ok(plugin)
+        });
+        inner.reload();
+        if let Some(overlay) = &inner.overlay {
+            let panel = Arc::clone(&inner);
+            overlay.panel("events", "Events", false, move |ui| panel::draw(&panel, ui))?;
+        }
+        // Everything, filtered here rather than there: the adapter's mask is per stream and
+        // the interesting filtering is per event name, which only this plugin knows about.
+        dayz.listen(Streams::ALL, Arc::clone(&inner))?;
+        log::info!(
+            "watching the game's events, chat and remote calls; {} classes known",
+            inner.catalogue.len()
+        );
+        Ok(GameLog { inner })
     }
 
-    fn on_game_event(&self, host: &Host, event: &Event<'_>) {
+    fn on_setting_changed(&self, _host: &Host, key: &str, _value: &str) {
+        // `search` is the panel's own filter and changes while somebody types in it; rebuilding
+        // the rules on every keystroke would be work for nothing.
+        if key != "search" {
+            self.inner.reload();
+        }
+    }
+
+    fn on_command(&self, host: &Host, name: &str, _args: &str) -> Result<(), PluginError> {
+        self.inner.command(host, name)
+    }
+
+    fn stop(&self, _host: &Host, _reason: StopReason) {
+        self.inner.file.flush();
+    }
+}
+
+impl GameListener for Inner {
+    fn on_game_event(&self, event: &Event<'_>) {
         self.counts.events.fetch_add(1, Ordering::Relaxed);
         let sinks = self.rules().for_event(event.name);
         if sinks.is_empty() {
@@ -175,10 +224,10 @@ impl Plugin for GameLog {
         self.remember(event.name);
         let fields = event.fields.iter().map(|field| (field.name, field.text));
         let what = describe(event.name, event.object, fields);
-        self.emit(host, "event", &what, sinks, alarming(event.name));
+        self.emit("event", &what, sinks, alarming(event.name));
     }
 
-    fn on_chat(&self, host: &Host, chat: &Chat<'_>) -> ChatVerdict {
+    fn on_chat(&self, chat: &Chat<'_>) -> ChatVerdict {
         self.counts.chat.fetch_add(1, Ordering::Relaxed);
         if self.switches.chat.load(Ordering::Relaxed) {
             let from = if chat.from.is_empty() {
@@ -193,7 +242,7 @@ impl Plugin for GameLog {
             if self.switches.chat_toasts.load(Ordering::Relaxed) {
                 sinks = sinks | Sinks::TOAST;
             }
-            self.emit(host, "chat", &what, sinks, false);
+            self.emit("chat", &what, sinks, false);
         }
         // This plugin reports; it never takes a line off the screen. Swallowing is in the ABI
         // for a plugin whose job is to filter chat, and a logger that could silently eat a
@@ -201,7 +250,7 @@ impl Plugin for GameLog {
         ChatVerdict::PASS
     }
 
-    fn on_rpc(&self, host: &Host, call: &Rpc) {
+    fn on_rpc(&self, call: &Rpc) {
         self.counts.rpc.fetch_add(1, Ordering::Relaxed);
         if !self.switches.rpc.load(Ordering::Relaxed) {
             return;
@@ -210,22 +259,13 @@ impl Plugin for GameLog {
             "kind {} from {:p} to {:p} params {:p}",
             call.kind, call.sender, call.target, call.params
         );
-        self.emit(host, "rpc", &what, Sinks::FILE | Sinks::CONSOLE, false);
+        self.emit("rpc", &what, Sinks::FILE | Sinks::CONSOLE, false);
     }
+}
 
-    fn on_setting_changed(&self, host: &Host, key: &str, _value: &str) {
-        // `search` is the panel's own filter and changes while somebody types in it; rebuilding
-        // the rules on every keystroke would be work for nothing.
-        if key != "search" {
-            self.reload(host);
-        }
-    }
-
-    fn on_ui(&self, host: &Host, ui: &Ui, _panel: &str) {
-        panel::draw(self, host, ui);
-    }
-
-    fn on_command(&self, host: &Host, name: &str, _args: &str) -> Result<(), PluginError> {
+impl Inner {
+    /// The plugin's console commands.
+    fn command(&self, host: &Host, name: &str) -> Result<(), PluginError> {
         match name {
             "where" => {
                 host.console_print(&format!("{}", self.file.path().display()));
@@ -254,7 +294,7 @@ impl Plugin for GameLog {
                 host.console_print("event log flushed");
                 Ok(())
             }
-            "events" => {
+            "classes" => {
                 let rules = self.rules();
                 for (name, fields) in self.rows() {
                     let how = if rules.is_explicit(&name) {
@@ -263,8 +303,9 @@ impl Plugin for GameLog {
                         "by pattern"
                     };
                     let sinks = rules.for_event(&name).to_string();
+                    let plural = if fields == 1 { "field " } else { "fields" };
                     host.console_print(&format!(
-                        "{name:<40} {fields:>2} fields  {sinks:<6} ({how})"
+                        "{name:<40} {fields:>2} {plural}  {sinks:<6} ({how})"
                     ));
                 }
                 Ok(())
@@ -273,12 +314,6 @@ impl Plugin for GameLog {
         }
     }
 
-    fn stop(&self, _host: &Host, _reason: StopReason) {
-        self.file.flush();
-    }
-}
-
-impl GameLog {
     /// Borrow the rules for reading.
     ///
     /// A poisoned lock is treated as readable: the rules are a plain value, a panic while
@@ -291,7 +326,8 @@ impl GameLog {
     }
 
     /// Re-read every setting this plugin's behaviour depends on.
-    fn reload(&self, host: &Host) {
+    fn reload(&self) {
+        let host = &self.host;
         self.switches.refresh(host);
         let rules = Rules::new(
             &host.get("sinks").unwrap_or_default(),
@@ -309,7 +345,7 @@ impl GameLog {
     }
 
     /// Take the panel's changes, write them back to the setting, and keep them.
-    pub(crate) fn reassign(&self, host: &Host, changes: &[(String, Sinks)]) {
+    pub(crate) fn reassign(&self, changes: &[(String, Sinks)]) {
         let text = {
             let mut rules = self
                 .rules
@@ -321,18 +357,18 @@ impl GameLog {
         // Written through the loader so it is validated, persisted and announced like any
         // other setting change — which also means `on_setting_changed` rebuilds the rules
         // from the text, so what is kept is what was saved.
-        if let Err(e) = host.set("sinks", &text) {
+        if let Err(e) = self.host.set("sinks", &text) {
             log::warn!("could not save the event table: {e}");
         }
     }
 
     /// Put every event back on the pattern lists.
-    pub(crate) fn clear_overrides(&self, host: &Host) {
+    pub(crate) fn clear_overrides(&self) {
         self.rules
             .write()
             .unwrap_or_else(std::sync::PoisonError::into_inner)
             .clear();
-        if let Err(e) = host.set("sinks", "") {
+        if let Err(e) = self.host.set("sinks", "") {
             log::warn!("could not clear the event table: {e}");
         }
     }
@@ -376,39 +412,39 @@ impl GameLog {
     }
 
     /// Send one line to each of its destinations.
-    fn emit(&self, host: &Host, kind: &str, what: &str, sinks: Sinks, alarming: bool) {
+    fn emit(&self, kind: &str, what: &str, sinks: Sinks, alarming: bool) {
         if sinks.has(Sinks::FILE) && self.switches.to_file.load(Ordering::Relaxed) {
             self.file
                 .write_line(&format!("{}  {kind:<5}  {what}", sink::stamp()));
         }
         if sinks.has(Sinks::CONSOLE) && self.switches.to_console.load(Ordering::Relaxed) {
-            host.console_print(&format!("{kind:<5} {what}"));
+            self.host.console_print(&format!("{kind:<5} {what}"));
         }
         if self.switches.to_log.load(Ordering::Relaxed) {
             log::info!("{kind} {what}");
         }
-        if sinks.has(Sinks::TOAST) {
-            let level = if alarming {
-                UiLevel::Warning
-            } else {
-                UiLevel::Info
-            };
-            let text: String = what.chars().take(CHAT_TOAST_LIMIT).collect();
-            let _ = host.show(&Notice::toast(&text).title(kind).level(level));
-        }
-        if sinks.has(Sinks::BOX) {
-            let level = if alarming {
-                UiLevel::Warning
-            } else {
-                UiLevel::Info
-            };
-            let _ = host.ask(&Dialog::message(kind, what).level(level));
+        let level = if alarming {
+            UiLevel::WARNING
+        } else {
+            UiLevel::INFO
+        };
+        // Both need the overlay; without it these two destinations are silent by design.
+        if let Some(overlay) = &self.overlay {
+            if sinks.has(Sinks::TOAST) {
+                let text: String = what.chars().take(CHAT_TOAST_LIMIT).collect();
+                let _ = overlay.toast(level, kind, &text);
+            }
+            if sinks.has(Sinks::BOX) {
+                let _ = overlay.dialog(UiDialog::MESSAGE, level, kind, what, "", |_, _| {});
+            }
         }
         if sinks.has(Sinks::CHAT) {
             // Ignored on purpose: the game object is not known until the engine has dispatched
             // a remote call, so this fails in the main menu. Logging a warning per event for
             // something that fixes itself on joining a server would be the louder mistake.
-            let _ = host.chat_local(&format!("{kind}: {what}"), CHAT_COLOUR);
+            let _ = self
+                .dayz
+                .chat_local(&format!("{kind}: {what}"), CHAT_COLOUR);
         }
     }
 }

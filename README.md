@@ -1,9 +1,11 @@
 # dayz-log-plugin
 
-A plugin for the [DayZ plugin loader](https://github.com/dayz-plugins/dayz-plugin-loader) that
-reports what the game does: every event the engine raises, every chat line, and every remote
-call a mod sends. Lines go to the loader console, to `game-events.log`, and — for the handful
-that mean the session changed under you — to a toast.
+A [uniloader](https://uniloaders.github.io/) plugin that reports what DayZ does: every event
+the engine raises, every chat line, and every remote call a mod sends. Lines go to the loader
+console, to `game-events.log`, and — for the handful that mean the session changed under you —
+to a toast. It needs the [DayZ adapter](https://github.com/dayz-plugins/dayz-adapter)
+(`dayz.dll`); toasts, message boxes and the **Events** panel also need uniloader's overlay
+plugin.
 
 ```text
 1759600412.118  event  MPSessionStartEvent at 0x000000003f8a1c40
@@ -14,10 +16,12 @@ that mean the session changed under you — to a toast.
 
 ## Installing
 
-Build and deploy in one step, with a `dayz-plugin-loader` checkout beside this one:
+Build and deploy in one step, with [uniloader](https://github.com/uniloaders/uniloader)
+(`../../uniloader`) and [dayz-adapter](https://github.com/dayz-plugins/dayz-adapter) checked
+out beside this one:
 
 ```bash
-scripts/build.sh --deploy
+scripts/gate.sh --deploy
 ```
 
 That installs `gamelog.dll` into `<game>/plugins/`. The loader picks it up on the next launch;
@@ -25,18 +29,19 @@ That installs `gamelog.dll` into `<game>/plugins/`. The loader picks it up on th
 
 ## What it can and cannot tell you
 
-Event **names** are reliable. The loader reads each event's class name out of the event's own
+Event **names** are reliable. The adapter reads each event's class name out of the event's own
 virtual table, so a class nobody has looked at still names itself correctly —
 `ConnectingStartEvent`, `MPConnectionCloseEvent`, `ClientPrepareEvent`, `RespawnEvent`,
 `PlayerDeathEvent` and about seventy more.
 
-Event **contents** are not decoded. Every class keeps its fields at its own offsets, and this
-plugin logs the name and the object's address rather than inventing a layout for it. So
-`MPConnectionCloseEvent` currently tells you that the connection closed and when, not why. The
-address is in the line so you can go and look with the loader's `read` command.
+Event **contents** are decoded only for the classes whose layout is in the
+[dayz-data](https://github.com/dayz-plugins/dayz-data) database. Every class keeps its fields at
+its own offsets, and for the others this plugin logs the name and the object's address rather
+than inventing a layout. The address is in the line so you can go and look with the adapter's
+`dayz.read` command.
 
-Chat is the exception: the loader catches it where the engine still has the channel and the
-three strings as separate arguments, so those fields are real.
+Chat is the exception: the adapter catches it where the engine still has the channel and the
+three strings as separate arguments, so those fields are always real.
 
 ## Settings
 
@@ -81,15 +86,17 @@ so an event class added by a game update shows up without anyone editing a list.
 | `gamelog.where` | Print the log file's path and how many lines it has. |
 | `gamelog.stats` | Print how much has been seen on each stream, and how much written. |
 | `gamelog.flush` | Write the log out now rather than at the next flush. |
+| `gamelog.classes` | List every event class and where each one's line goes. |
 
-`game` — a loader command, not this plugin's — shows the other half: which of the engine's
-streams the loader managed to hook, how much has passed through them, and who is listening.
+`dayz.game` — the adapter's command, not this plugin's — shows the other half: which of the
+engine's streams the adapter managed to hook, how much has passed through them, and who is
+listening.
 
 ## How it works
 
-Nothing in this repository touches the game. The loader installs three detours during its own
-initialisation and offers them as three subscribable streams; this plugin asks for all three
-and decides what to do with what arrives.
+Nothing in this repository touches the game. The DayZ adapter installs three detours when it
+starts and offers them as three subscribable streams; this plugin asks for all three and
+decides what to do with what arrives.
 
 - `event.raise`, the engine's event broadcaster, which every event passes through.
 - `chat.raise_message`, one level below the chat event, where the parts are still separate.
@@ -98,7 +105,7 @@ and decides what to do with what arrives.
 The addresses come from [dayz-data](https://github.com/dayz-plugins/dayz-data) and the
 reasoning behind them is written up in
 [research/events.md](https://dayz-plugins.github.io/research/events.html). On a build whose
-addresses are not in the database the loader hooks nothing, `listen_game` fails, and this
+addresses are not in the database the adapter hooks nothing, subscribing fails, and this
 plugin says so in the log instead of starting.
 
 ## Licence
